@@ -85,6 +85,12 @@ class AstrometricModel():
             #Catching the case where the file doesnt exist:
             success = self.load_model(loadfile=save_file_loc)
             self.load_from_file = success
+        else:
+            self.modnames=[]
+            self.init_solns={}
+            self.traces={}
+            self.pm_model_params={}
+            self.pm_models={}
 
         
     def update_global_params(self,**kwargs):
@@ -311,9 +317,9 @@ class AstrometricModel():
             else:
                 self.planets[plname]['true_'+col]=self.planets[plname][col]
 
-    def init_model(self, w_planets=True, w_loglik=True, **kwargs):
+    def init_model(self, w_planets=True, modname=None, duo_pl=None, duo_per_d=None, duo_eper_d=None, w_loglik=True, overwrite=False, **kwargs):
         """
-        Initialising PyMC3 model. Can be performed with and without planets. Creates pm_mod_w_planets and pm_mod_no_planets arguments
+        Initialising PyMC3 model. Can be performed with and without planets. Creates with, without and custom period pymc3 models
         """
         self.update_global_params(**kwargs)
         
@@ -322,136 +328,144 @@ class AstrometricModel():
         if not hasattr(self,'gaia_y_mas') and w_loglik:
             self.init_injected_planet_model()
         
-        modname = "pm_mod_w_planets" if w_planets else "pm_mod_no_planets"
-        model_params={}
-        if hasattr(self,modname):
-            delattr(self,modname)
-            delattr(self,modname+"_params")
-        with pm.Model() as mod:            
+        if modname is None:
+            modname = "w_planets" if w_planets else "no_planets"
+            modname = "duo_P"+duo_pl+str(int(np.round(duo_per_d)))+"_"+modname if duo_per_d is not None else modname
+        else:
+            modname = modname
+            w_planets=True if "w_planets" in modname else False
+        assert overwrite or (modname not in self.modnames), modname+" already initialised. Set overwrite=True to redo"
+        
+        if modname in self.pm_models:
+            _=self.pm_models[modname]
+        self.pm_model_params[modname]={}
+        with pm.Model() as self.pm_models[modname]:            
             #initialising star
-            model_params['rad_rsun'] = pm.Normal('rad_rsun', mu=self.rad_rsun, sd =self.erad_rsun)
-            model_params['mass_msun'] = pm.Normal('mass_msun', mu=self.mass_msun, sd = self.emass_msun)
-            model_params['plx_mas'] = pm.Normal('plx_mas', mu=self.plx_mas, sd=self.eplx_mas)
-            model_params['RA_offset_mas'] = pm.Normal("RA_offset_mas", mu=0, sd=self.eRA_mas)
-            model_params['DEC_offset_mas'] = pm.Normal("DEC_offset_mas", mu=0, sd=self.eDEC_mas)
-            model_params['pmRA_masyr'] = pm.Normal("pmRA_masyr", mu=self.pmRA_masyr, sigma=self.epmRA_masyr)
-            model_params['pmDEC_masyr'] = pm.Normal("pmDEC_masyr", mu=self.pmDEC_masyr, sigma=self.epmDEC_masyr)
+            self.pm_model_params[modname]['rad_rsun'] = pm.Normal('rad_rsun', mu=self.rad_rsun, sd =self.erad_rsun)
+            self.pm_model_params[modname]['mass_msun'] = pm.Normal('mass_msun', mu=self.mass_msun, sd = self.emass_msun)
+            self.pm_model_params[modname]['plx_mas'] = pm.Normal('plx_mas', mu=self.plx_mas, sd=self.eplx_mas)
+            self.pm_model_params[modname]['RA_offset_mas'] = pm.Normal("RA_offset_mas", mu=0, sd=self.eRA_mas)
+            self.pm_model_params[modname]['DEC_offset_mas'] = pm.Normal("DEC_offset_mas", mu=0, sd=self.eDEC_mas)
+            self.pm_model_params[modname]['pmRA_masyr'] = pm.Normal("pmRA_masyr", mu=self.pmRA_masyr, sigma=self.epmRA_masyr)
+            self.pm_model_params[modname]['pmDEC_masyr'] = pm.Normal("pmDEC_masyr", mu=self.pmDEC_masyr, sigma=self.epmDEC_masyr)
 
             #initialising planets
             if w_planets:
-                model_params['t0_jds']={};model_params['per_ds']={};model_params['bs']={};
-                model_params['logmpl_mjups']={};model_params['mpl_mjups']={};model_params['orbits']={};
-                model_params['Deltara_pl']={};model_params['Deltadec_pl']={};self.plfitparams={}
+                self.pm_model_params[modname]['t0_jds']={};self.pm_model_params[modname]['per_ds']={};self.pm_model_params[modname]['bs']={};
+                self.pm_model_params[modname]['logmpl_mjups']={};self.pm_model_params[modname]['mpl_mjups']={};self.pm_model_params[modname]['orbits']={};
+                self.pm_model_params[modname]['Deltara_pl']={};self.pm_model_params[modname]['Deltadec_pl']={};self.plfitparams={}
                 if self.fine_sampling:
-                    model_params['Deltara_pl_fine']={};model_params['Deltadec_pl_fine']={};
+                    self.pm_model_params[modname]['Deltara_pl_fine']={};self.pm_model_params[modname]['Deltadec_pl_fine']={};
                 if not self.assume_circ:
-                    model_params['eccs']={};model_params['ecs']={};model_params['little_omega_rads']={};model_params['big_Omega_rads']={}
+                    self.pm_model_params[modname]['eccs']={};self.pm_model_params[modname]['ecs']={};self.pm_model_params[modname]['little_omega_rads']={};self.pm_model_params[modname]['big_Omega_rads']={}
                     if self.omegas_prior=='p&m':
-                        model_params['omega_ps']={};model_params['omega_ms']={}
+                        self.pm_model_params[modname]['omega_ps']={};self.pm_model_params[modname]['omega_ms']={}
 
                 # Defining prior probability distributions for all orbital parameters.
                 for pl in self.planets:
-                    model_params['t0_jds'][pl] = pm.Normal('t0_jd_'+pl, mu=self.planets[pl]['t0_jd'], sd=self.planets[pl]['et0_jd'])
-                    model_params['per_ds'][pl] = pm.Normal('per_d_'+pl, mu=self.planets[pl]['per_d'], sd=self.planets[pl]['eper_d'])
-                    model_params['bs'][pl] = pm.Normal('b_'+pl, mu=self.planets[pl]['b'], sd=self.planets[pl]['eb'])
-                    self.plfitparams[pl]=[model_params['t0_jds'][pl],model_params['per_ds'][pl],model_params['bs'][pl]]
+                    self.pm_model_params[modname]['t0_jds'][pl] = pm.Normal('t0_jd_'+pl, mu=self.planets[pl]['t0_jd'], sd=self.planets[pl]['et0_jd'])
+                    if duo_pl is not None and duo_pl==pl:
+                        assert duo_per_d is not None and duo_eper_d is not None, "Must have specified `duo_per_d` and `duo_eper_d` as arguments to `init_model` in order to run with a duotransit orbit"
+                        self.pm_model_params[modname]['per_ds'][pl] = pm.Normal('per_d_'+pl, mu=duo_per_d, sd=duo_eper_d)
+                    else:
+                        self.pm_model_params[modname]['per_ds'][pl] = pm.Normal('per_d_'+pl, mu=self.planets[pl]['per_d'], sd=self.planets[pl]['eper_d'])
+                    self.pm_model_params[modname]['bs'][pl] = pm.Normal('b_'+pl, mu=self.planets[pl]['b'], sd=self.planets[pl]['eb'])
+                    self.plfitparams[pl]=[self.pm_model_params[modname]['t0_jds'][pl],self.pm_model_params[modname]['per_ds'][pl],self.pm_model_params[modname]['bs'][pl]]
                     if not self.assume_circ:
                         
                         # For non-zero eccentricity, it can sometimes be better to use
                         # sqrt(e)*sin(omega) and sqrt(e)*cos(omega) as your parameters:
                         #
                         if self.ecc_prior=="sqrtesinomega":
-                            model_params['ecs'][pl] = pmx.UnitDisk("ecs_"+pl)
-                            self.plfitparams[pl]+=[model_params['ecs'][pl]]
-                            model_params['eccs'][pl] = pm.Deterministic("ecc_"+pl, tt.sum(model_params['ecs'][pl] ** 2, axis=0))
-                            model_params['little_omega_rads'][pl] = pm.Deterministic("little_omega_rad_"+pl, tt.arctan2(model_params['ecs'][pl][1], model_params['ecs'][pl][0]))
+                            self.pm_model_params[modname]['ecs'][pl] = pmx.UnitDisk("ecs_"+pl)
+                            self.plfitparams[pl]+=[self.pm_model_params[modname]['ecs'][pl]]
+                            self.pm_model_params[modname]['eccs'][pl] = pm.Deterministic("ecc_"+pl, tt.sum(self.pm_model_params[modname]['ecs'][pl] ** 2, axis=0))
+                            self.pm_model_params[modname]['little_omega_rads'][pl] = pm.Deterministic("little_omega_rad_"+pl, tt.arctan2(self.pm_model_params[modname]['ecs'][pl][1], self.pm_model_params[modname]['ecs'][pl][0]))
                             if self.omegas_prior=='p&m':
-                                model_params['omega_ps'][pl]=pmx.Angle("omega_p_"+pl)
-                                self.plfitparams[pl]+=[model_params['omega_ps'][pl]]
-                                model_params['big_Omega_rads'][pl]=pm.Deterministic("big_Omega_rad_"+pl,2*model_params['omega_ps'][pl]-model_params['little_omega_rads'][pl])
-                                model_params['omega_ms'][pl] = pm.Deterministic('omega_ms',0.5*(model_params['big_Omega_rads'][pl]-model_params['little_omega_rads'][pl]))
+                                self.pm_model_params[modname]['omega_ps'][pl]=pmx.Angle("omega_p_"+pl)
+                                self.plfitparams[pl]+=[self.pm_model_params[modname]['omega_ps'][pl]]
+                                self.pm_model_params[modname]['big_Omega_rads'][pl]=pm.Deterministic("big_Omega_rad_"+pl,2*self.pm_model_params[modname]['omega_ps'][pl]-self.pm_model_params[modname]['little_omega_rads'][pl])
+                                self.pm_model_params[modname]['omega_ms'][pl] = pm.Deterministic('omega_ms',0.5*(self.pm_model_params[modname]['big_Omega_rads'][pl]-self.pm_model_params[modname]['little_omega_rads'][pl]))
                             else:
-                                model_params['big_Omega_rads'][pl] = pmx.Angle('big_Omega_rad_'+pl)
-                                self.plfitparams[pl]+=[model_params['big_Omega_rads'][pl]]
+                                self.pm_model_params[modname]['big_Omega_rads'][pl] = pmx.Angle('big_Omega_rad_'+pl)
+                                self.plfitparams[pl]+=[self.pm_model_params[modname]['big_Omega_rads'][pl]]
                         else:
                             if self.ecc_prior=='auto' or self.ecc_prior=='kipping':
-                                model_params['eccs'][pl] = pm.Beta('ecc_'+pl, alpha=1.12, beta=3.09)
+                                self.pm_model_params[modname]['eccs'][pl] = pm.Beta('ecc_'+pl, alpha=1.12, beta=3.09)
                             elif self.ecc_prior=='vaneylen':
-                                model_params['eccs'][pl] = xo.distributions.eccentricity.vaneylen19('ecc_'+pl, fixed=True, testval=0.05)
-                            self.plfitparams[pl]+=[model_params['eccs'][pl]]
+                                self.pm_model_params[modname]['eccs'][pl] = xo.distributions.eccentricity.vaneylen19('ecc_'+pl, fixed=True, testval=0.05)
+                            self.plfitparams[pl]+=[self.pm_model_params[modname]['eccs'][pl]]
                             if self.omegas_prior=='p&m':
-                                model_params['omega_ps'][pl]=pmx.Angle("omega_p_"+pl)
-                                model_params['omega_ms'][pl]=pmx.Angle("omega_m_"+pl)
-                                self.plfitparams[pl]+=[model_params['omega_ps'][pl],model_params['omega_ms'][pl]]
-                                model_params['little_omega_rads'][pl]=pm.Deterministic("little_omega_rad_"+pl, model_params['omega_ps'][pl]-model_params['omega_ms'][pl])
-                                model_params['big_Omega_rads'][pl]=pm.Deterministic("big_Omega_rad_"+pl,
-                                                                                    model_params['omega_ps'][pl] + model_params['omega_ms'][pl])
+                                self.pm_model_params[modname]['omega_ps'][pl]=pmx.Angle("omega_p_"+pl)
+                                self.pm_model_params[modname]['omega_ms'][pl]=pmx.Angle("omega_m_"+pl)
+                                self.plfitparams[pl]+=[self.pm_model_params[modname]['omega_ps'][pl],self.pm_model_params[modname]['omega_ms'][pl]]
+                                self.pm_model_params[modname]['little_omega_rads'][pl]=pm.Deterministic("little_omega_rad_"+pl, self.pm_model_params[modname]['omega_ps'][pl]-self.pm_model_params[modname]['omega_ms'][pl])
+                                self.pm_model_params[modname]['big_Omega_rads'][pl]=pm.Deterministic("big_Omega_rad_"+pl,
+                                                                                    self.pm_model_params[modname]['omega_ps'][pl] + self.pm_model_params[modname]['omega_ms'][pl])
 
                             else:
-                                model_params['little_omega_rads'][pl] = pmx.Angle('little_omega_rad_'+pl)
-                                model_params['big_Omega_rads'][pl] = pmx.Angle('big_Omega_rad_'+pl)
-                                self.plfitparams[pl]+=[model_params['little_omega_rads'][pl],model_params['big_Omega_rads'][pl]]
+                                self.pm_model_params[modname]['little_omega_rads'][pl] = pmx.Angle('little_omega_rad_'+pl)
+                                self.pm_model_params[modname]['big_Omega_rads'][pl] = pmx.Angle('big_Omega_rad_'+pl)
+                                self.plfitparams[pl]+=[self.pm_model_params[modname]['little_omega_rads'][pl],self.pm_model_params[modname]['big_Omega_rads'][pl]]
                     if self.planet_mass_prior=="log":
-                        model_params['logmpl_mjups'][pl] = pm.Uniform('logmpl_mjup_'+pl, lower=np.log(1/300), upper=np.log(150))
-                        self.plfitparams[pl]+=[model_params['logmpl_mjups'][pl]]
-                        model_params['mpl_mjups'][pl] = pm.Deterministic("mpl_mjup_"+pl, tt.exp(model_params['logmpl_mjups'][pl]))
+                        self.pm_model_params[modname]['logmpl_mjups'][pl] = pm.Uniform('logmpl_mjup_'+pl, lower=np.log(1/300), upper=np.log(150))
+                        self.plfitparams[pl]+=[self.pm_model_params[modname]['logmpl_mjups'][pl]]
+                        self.pm_model_params[modname]['mpl_mjups'][pl] = pm.Deterministic("mpl_mjup_"+pl, tt.exp(self.pm_model_params[modname]['logmpl_mjups'][pl]))
                     elif self.planet_mass_prior=="linear":
-                        model_params['mpl_mjups'][pl] = pm.Uniform('mpl_mjup_'+pl, lower=1/300, upper=150)
-                        self.plfitparams[pl]+=[model_params['mpl_mjups'][pl]]
+                        self.pm_model_params[modname]['mpl_mjups'][pl] = pm.Uniform('mpl_mjup_'+pl, lower=1/300, upper=150)
+                        self.plfitparams[pl]+=[self.pm_model_params[modname]['mpl_mjups'][pl]]
                 #Instantiating Orbit
                 for pl in self.planets:
                     if not self.assume_circ:
-                        model_params['orbits'][pl] = xo.orbits.KeplerianOrbit(
-                            t0=model_params['t0_jds'][pl], period=model_params['per_ds'][pl], incl=None, b=model_params['bs'][pl], e = model_params['eccs'][pl],
-                            omega=model_params['little_omega_rads'][pl], Omega=model_params['big_Omega_rads'][pl], r_star=model_params['rad_rsun'], m_star=model_params['mass_msun'],
-                            m_planet=model_params['mpl_mjups'][pl], m_planet_units=u.Mjup
+                        self.pm_model_params[modname]['orbits'][pl] = xo.orbits.KeplerianOrbit(
+                            t0=self.pm_model_params[modname]['t0_jds'][pl], period=self.pm_model_params[modname]['per_ds'][pl], incl=None, b=self.pm_model_params[modname]['bs'][pl], e = self.pm_model_params[modname]['eccs'][pl],
+                            omega=self.pm_model_params[modname]['little_omega_rads'][pl], Omega=self.pm_model_params[modname]['big_Omega_rads'][pl], r_star=self.pm_model_params[modname]['rad_rsun'], m_star=self.pm_model_params[modname]['mass_msun'],
+                            m_planet=self.pm_model_params[modname]['mpl_mjups'][pl], m_planet_units=u.Mjup
                             )
                     else:
-                        model_params['orbits'][pl] = xo.orbits.KeplerianOrbit(
-                            t0=model_params['t0_jds'][pl], period=model_params['per_ds'][pl], incl=None, b=model_params['bs'][pl], 
-                            r_star=model_params['rad_rsun'], m_star=model_params['mass_msun'], m_planet=model_params['mpl_mjups'][pl], m_planet_units=u.Mjup
+                        self.pm_model_params[modname]['orbits'][pl] = xo.orbits.KeplerianOrbit(
+                            t0=self.pm_model_params[modname]['t0_jds'][pl], period=self.pm_model_params[modname]['per_ds'][pl], incl=None, b=self.pm_model_params[modname]['bs'][pl], 
+                            r_star=self.pm_model_params[modname]['rad_rsun'], m_star=self.pm_model_params[modname]['mass_msun'], m_planet=self.pm_model_params[modname]['mpl_mjups'][pl], m_planet_units=u.Mjup
                             )
 
                     if self.fine_sampling:
                         # Exoplanet motion. Automatically in same units as parallax
-                        model_params['Deltara_pl_fine'][pl] = pm.Deterministic("Deltara_pl_fine_"+pl, model_params['orbits'][pl].get_star_position(self.gaia_tfine.jd, parallax=model_params['plx_mas'])[0]) # R.A. motion for a fine grid of time points
-                        model_params['Deltadec_pl_fine'][pl] = pm.Deterministic("Deltadec_pl_fine_"+pl, model_params['orbits'][pl].get_star_position(self.gaia_tfine.jd, parallax=model_params['plx_mas'])[1]) # Dec. motion for a fine grid of time points
-                    model_params['Deltara_pl'][pl] = pm.Deterministic("Deltara_pl_"+pl, model_params['orbits'][pl].get_star_position(self.gaia_t.jd, parallax=model_params['plx_mas'])[0]) # Best fit exoplanet motion in R.A
-                    model_params['Deltadec_pl'][pl] = pm.Deterministic("Deltadec_pl_"+pl, model_params['orbits'][pl].get_star_position(self.gaia_t.jd, parallax=model_params['plx_mas'])[1]) # # Best fit exoplanet motion in dEC.
-            #tt.printing.Print("planet_stack_dec")(tt.sum(tt.stack([model_params['Deltadec_pl'][pl] for pl in self.planets],axis=0),axis=0))
-            #tt.printing.Print("planet_stack_ra")(tt.sum(tt.stack([model_params['Deltara_pl'][pl] for pl in self.planets],axis=0),axis=0))
+                        self.pm_model_params[modname]['Deltara_pl_fine'][pl] = pm.Deterministic("Deltara_pl_fine_"+pl, self.pm_model_params[modname]['orbits'][pl].get_star_position(self.gaia_tfine.jd, parallax=self.pm_model_params[modname]['plx_mas'])[0]) # R.A. motion for a fine grid of time points
+                        self.pm_model_params[modname]['Deltadec_pl_fine'][pl] = pm.Deterministic("Deltadec_pl_fine_"+pl, self.pm_model_params[modname]['orbits'][pl].get_star_position(self.gaia_tfine.jd, parallax=self.pm_model_params[modname]['plx_mas'])[1]) # Dec. motion for a fine grid of time points
+                    self.pm_model_params[modname]['Deltara_pl'][pl] = pm.Deterministic("Deltara_pl_"+pl, self.pm_model_params[modname]['orbits'][pl].get_star_position(self.gaia_t.jd, parallax=self.pm_model_params[modname]['plx_mas'])[0]) # Best fit exoplanet motion in R.A
+                    self.pm_model_params[modname]['Deltadec_pl'][pl] = pm.Deterministic("Deltadec_pl_"+pl, self.pm_model_params[modname]['orbits'][pl].get_star_position(self.gaia_t.jd, parallax=self.pm_model_params[modname]['plx_mas'])[1]) # # Best fit exoplanet motion in dEC.
+            #tt.printing.Print("planet_stack_dec")(tt.sum(tt.stack([self.pm_model_params[modname]['Deltadec_pl'][pl] for pl in self.planets],axis=0),axis=0))
+            #tt.printing.Print("planet_stack_ra")(tt.sum(tt.stack([self.pm_model_params[modname]['Deltara_pl'][pl] for pl in self.planets],axis=0),axis=0))
 
             # Local plane coordinates which approximately equal delta_alpha*cos(delta) and delta_delta
             if self.fine_sampling:
-                model_params['uO_fine'] = self.uO_init_fine[:,:] + tt.tensordot((self.p*model_params['pmRA_masyr']*_mastorad + self.q*model_params['pmDEC_masyr']*_mastorad), 
-                                             (self.tB_fine.jyear-2015.5), axes=0) - model_params['plx_mas']*_mastorad*self.bO_bcrs_fine
-                model_params['Deltara_par_pm_fine'] = pm.Deterministic("Deltara_par_pm_fine", tt.dot(self.p, model_params['uO_fine'])/tt.dot(self.r, model_params['uO_fine'])/_mastorad) # Xi in the parallactic motion = local Delta_ra*cos(dec) (in rad - need to convert to mas)
-                model_params['Deltadec_par_pm_fine'] = pm.Deterministic("Deltadec_par_pm_fine", tt.dot(self.q, model_params['uO_fine'])/tt.dot(self.r, model_params['uO_fine'])/_mastorad) # Eta in the parallactic motion = local Delta_dec (in rad - need to convert to mas)
-            model_params['uO'] = self.uO_init[:,:] + tt.tensordot((self.p*model_params['pmRA_masyr']*_mastorad + self.q*model_params['pmDEC_masyr']*_mastorad), 
-                                             (self.tB.jyear-2015.5), axes=0) - model_params['plx_mas']*_mastorad*self.bO_bcrs
-            model_params['Deltara_par_pm'] = pm.Deterministic("Deltara_par_pm", tt.dot(self.p, model_params['uO'])/tt.dot(self.r, model_params['uO'])/_mastorad) # Xi in the parallactic motion = local Delta_ra*cos(dec) (in rad - need to convert to mas)
-            model_params['Deltadec_par_pm'] = pm.Deterministic("Deltadec_par_pm", tt.dot(self.q, model_params['uO'])/tt.dot(self.r, model_params['uO'])/_mastorad) # Eta in the parallactic motion = local Delta_dec (in rad - need to convert to mas)
+                self.pm_model_params[modname]['uO_fine'] = self.uO_init_fine[:,:] + tt.tensordot((self.p*self.pm_model_params[modname]['pmRA_masyr']*_mastorad + self.q*self.pm_model_params[modname]['pmDEC_masyr']*_mastorad), 
+                                             (self.tB_fine.jyear-2015.5), axes=0) - self.pm_model_params[modname]['plx_mas']*_mastorad*self.bO_bcrs_fine
+                self.pm_model_params[modname]['Deltara_par_pm_fine'] = pm.Deterministic("Deltara_par_pm_fine", tt.dot(self.p, self.pm_model_params[modname]['uO_fine'])/tt.dot(self.r, self.pm_model_params[modname]['uO_fine'])/_mastorad) # Xi in the parallactic motion = local Delta_ra*cos(dec) (in rad - need to convert to mas)
+                self.pm_model_params[modname]['Deltadec_par_pm_fine'] = pm.Deterministic("Deltadec_par_pm_fine", tt.dot(self.q, self.pm_model_params[modname]['uO_fine'])/tt.dot(self.r, self.pm_model_params[modname]['uO_fine'])/_mastorad) # Eta in the parallactic motion = local Delta_dec (in rad - need to convert to mas)
+            self.pm_model_params[modname]['uO'] = self.uO_init[:,:] + tt.tensordot((self.p*self.pm_model_params[modname]['pmRA_masyr']*_mastorad + self.q*self.pm_model_params[modname]['pmDEC_masyr']*_mastorad), 
+                                             (self.tB.jyear-2015.5), axes=0) - self.pm_model_params[modname]['plx_mas']*_mastorad*self.bO_bcrs
+            self.pm_model_params[modname]['Deltara_par_pm'] = pm.Deterministic("Deltara_par_pm", tt.dot(self.p, self.pm_model_params[modname]['uO'])/tt.dot(self.r, self.pm_model_params[modname]['uO'])/_mastorad) # Xi in the parallactic motion = local Delta_ra*cos(dec) (in rad - need to convert to mas)
+            self.pm_model_params[modname]['Deltadec_par_pm'] = pm.Deterministic("Deltadec_par_pm", tt.dot(self.q, self.pm_model_params[modname]['uO'])/tt.dot(self.r, self.pm_model_params[modname]['uO'])/_mastorad) # Eta in the parallactic motion = local Delta_dec (in rad - need to convert to mas)
             
             if w_planets:
                 #Objective function:
-                model_params['ymodel'] = pm.Deterministic("ymodel", (model_params['RA_offset_mas']+model_params['Deltara_par_pm']+tt.sum(tt.stack([model_params['Deltadec_pl'][pl] for pl in self.planets],axis=0),axis=0))*tt.sin(self.gaia_scanAng_rad)+(model_params['DEC_offset_mas']+model_params['Deltadec_par_pm']+tt.sum(tt.stack([model_params['Deltara_pl'][pl] for pl in self.planets],axis=0),axis=0))*tt.cos(self.gaia_scanAng_rad))
+                self.pm_model_params[modname]['ymodel'] = pm.Deterministic("ymodel", (self.pm_model_params[modname]['RA_offset_mas']+self.pm_model_params[modname]['Deltara_par_pm']+tt.sum(tt.stack([self.pm_model_params[modname]['Deltadec_pl'][pl] for pl in self.planets],axis=0),axis=0))*tt.sin(self.gaia_scanAng_rad)+(self.pm_model_params[modname]['DEC_offset_mas']+self.pm_model_params[modname]['Deltadec_par_pm']+tt.sum(tt.stack([self.pm_model_params[modname]['Deltara_pl'][pl] for pl in self.planets],axis=0),axis=0))*tt.cos(self.gaia_scanAng_rad))
             else:
-                model_params['ymodel'] = pm.Deterministic("ymodel", (model_params['RA_offset_mas']+model_params['Deltara_par_pm'])*tt.sin(self.gaia_scanAng_rad)+(model_params['DEC_offset_mas']+model_params['Deltadec_par_pm'])*tt.cos(self.gaia_scanAng_rad))
+                self.pm_model_params[modname]['ymodel'] = pm.Deterministic("ymodel", (self.pm_model_params[modname]['RA_offset_mas']+self.pm_model_params[modname]['Deltara_par_pm'])*tt.sin(self.gaia_scanAng_rad)+(self.pm_model_params[modname]['DEC_offset_mas']+self.pm_model_params[modname]['Deltadec_par_pm'])*tt.cos(self.gaia_scanAng_rad))
             
             if hasattr(self,'gaia_y_mas') and w_loglik:
-                model_params['log_likelihood']=pm.Normal("obs", mu=model_params['ymodel'], sd=self.gaia_yerr_mas, observed=self.gaia_y_mas)
-            
-        #Making sure we set the pymc3 model as "pm_mod_w_planets"/"pm_mod_no_planets":
-        setattr(self,modname,mod)
-        setattr(self,modname+"_params",model_params)
-        
-    def init_injected_planet_model(self,**kwargs):
+                self.pm_model_params[modname]['log_likelihood']=pm.Normal("obs", mu=self.pm_model_params[modname]['ymodel'], sd=self.gaia_yerr_mas, observed=self.gaia_y_mas)
+        if modname not in self.modnames:
+            self.modnames+=[modname]
+
+    def init_injected_planet_model(self, duo_per_d=None, duo_eper_d=None, **kwargs):
         """
         Initialise injected planet model. This uses the pymc3 model built above.
         """
         self.update_global_params(**kwargs)
-        if not hasattr(self,"pm_mod_w_planets"):
-            self.init_model(w_planets=True, w_loglik=False)
+        if "w_planets" not in self.pm_models:
+            self.init_model(w_planets=True, w_loglik=False,overwrite=True)
         init_dict={s:getattr(self,"true_"+s) for s in 'rad_rsun,mass_msun,plx_mas,RA_offset_mas,DEC_offset_mas,pmRA_masyr,pmDEC_masyr'.split(',')}
         for pl in self.planets:
             init_dict.update({s+"_"+pl:self.planets[pl]['true_'+s] for s in ['t0_jd','per_d','b']})
@@ -476,27 +490,28 @@ class AstrometricModel():
                 init_dict.update({'mpl_mjup_'+pl+'_interval__':pm.transforms.Interval(1/300, 150).forward(self.planets[pl]['true_mpl_mjup']).eval()})
             else:
                 init_dict.update({'logmpl_mjup_'+pl+'_interval__':pm.transforms.Interval(np.log(1/300), np.log(150)).forward(np.log(self.planets[pl]['true_mpl_mjup'])).eval()})
-        with self.pm_mod_w_planets:
-            self.true_gaia_y_w_planets = pmx.eval_in_model(self.pm_mod_w_planets_params['ymodel'],point=init_dict)
+        with self.pm_models["w_planets"]:
+            self.true_gaia_y_w_planets = pmx.eval_in_model(self.pm_model_params["w_planets"]['ymodel'],point=init_dict)
         self.gaia_y_mas = np.random.normal(self.true_gaia_y_w_planets,self.gaia_yerr_mas)
 
-    def optimize_model(self, w_planets=True, iterate_test_mass=True, n_optimizations=10, **kwargs):
+    def optimize_model(self, modname, iterate_test_mass=True, n_optimizations=10, **kwargs):
         """
         Optimizing the PyMC3 model.
         """
         self.update_global_params(**kwargs)
         if not hasattr(self,'true_gaia_y_w_planets'):
             self.init_injected_planet_model()
-
-        if w_planets:
-            if not hasattr(self,'pm_mod_w_planets') or 'log_likelihood' not in self.pm_mod_w_planets_params:
-                self.init_model(w_planets=True)
+        #assert type(modnames)==list or modnames=='all', "modnames must be \"all\" or a list of model names from which to optimize"
+        if modname not in self.pm_models or 'log_likelihood' not in self.pm_model_params[modname]:
+            #Initialising
+            self.init_model(modname=modname,overwrite=True)
+        if "w_planets" in modname:
             llk=-1e9
             for n_it in range(n_optimizations):
                 # Because of degeneracies, we really need to start in a good place - performing multiple optimizations with multiple start points will help...
-                with self.pm_mod_w_planets:
+                with self.pm_models[modname]:
                     #First, getting a "test_point" and varying it, especially key planet params like mass, period, etc.
-                    tp_start=self.pm_mod_w_planets.test_point
+                    tp_start=self.pm_models[modname].test_point
                     tp_start={col:tp_start[col]*np.random.normal(1.0,1e-5) for col in tp_start}
                     for pl in self.planets:
                         mplrand=abs(np.random.normal(self.planets[pl]['mpl_mjup'],self.planets[pl]['empl_mjup']))
@@ -514,32 +529,30 @@ class AstrometricModel():
                                 tp_start['little_omega_rad_'+pl+'_angle__']=(np.sin(omrand), np.cos(omrand))
                                 tp_start['ecc_'+pl+'_logodds__']= pm.transforms.logodds.apply(pm.distributions.Beta.dist(alpha=1.12,beta=3.09,testval=erand)).default()
                     # Now optimizing, starting with the stellar params:
-                    init_cols=[self.pm_mod_w_planets_params[col] for col in ['plx_mas','pmRA_masyr','pmDEC_masyr','RA_offset_mas','DEC_offset_mas']]
-                    i_w_planets_init_soln = pmx.optimize(vars=init_cols,start=tp_start,progress=False)
+                    init_cols=[self.pm_model_params[modname][col] for col in ['plx_mas','pmRA_masyr','pmDEC_masyr','RA_offset_mas','DEC_offset_mas']]
+                    i_init_soln = pmx.optimize(vars=init_cols,start=tp_start,progress=False)
                     #Then using key planet parameters:
-                    i_w_planets_init_soln = pmx.optimize(start=i_w_planets_init_soln,vars=init_cols+sum(self.plfitparams.values(),[]),progress=False)
+                    i_init_soln = pmx.optimize(start=i_init_soln, vars=init_cols+sum(self.plfitparams.values(),[]),progress=False)
                     #Finally using all parameters:
-                    i_w_planets_init_soln = pmx.optimize(start=i_w_planets_init_soln)
-                    no_nans=np.all([~np.any(np.isnan(i_w_planets_init_soln[c])) for c in i_w_planets_init_soln])
-                    illk=pmx.eval_in_model(self.pm_mod_w_planets.logpt,point=i_w_planets_init_soln)
+                    i_init_soln = pmx.optimize(start=i_init_soln)
+                    no_nans=np.all([~np.any(np.isnan(i_init_soln[c])) for c in i_init_soln])
+                    illk=pmx.eval_in_model(self.pm_models[modname].logpt,point=i_init_soln)
                     if not np.isnan(illk) and no_nans and illk>llk:
                         #Checking if we have a valid and better solution - if so we update the llk and start-point
-                        self.w_planets_init_soln=i_w_planets_init_soln
+                        self.init_solns[modname]=i_init_soln
                         llk=illk
-            if not hasattr(self,'pm_mod_no_planets') or 'log_likelihood' not in self.pm_mod_no_planets_params:
-                self.init_model(w_planets=False)
-            with self.pm_mod_no_planets:
+        elif modname=='no_planets':
+            with self.pm_models[modname]:
                 #Optimizing - starting with key stellar parameters
-                init_cols=[self.pm_mod_no_planets_params[col] for col in ['plx_mas','pmRA_masyr','pmDEC_masyr','RA_offset_mas','DEC_offset_mas']]
-                self.no_planets_init_soln = pmx.optimize(vars=init_cols)
+                init_cols=[self.pm_model_params[modname][col] for col in ['plx_mas','pmRA_masyr','pmDEC_masyr','RA_offset_mas','DEC_offset_mas']]
+                self.init_solns[modname] = pmx.optimize(vars=init_cols)
                 #Finally using all parameters:
-                self.no_planets_init_soln = pmx.optimize(start=self.no_planets_init_soln)
+                self.init_solns[modname] = pmx.optimize(start=self.init_solns[modname])
     
     def assess_planet_detection(self):
         """
         How well-detected in the planet detection by the model? TBD
         """
-        assert hasattr(self,'w_planets_trace'), "Must have sampled the with-planets model"
         
         # 1) Fitting a Gaussian to the planet detection
         
@@ -551,64 +564,56 @@ class AstrometricModel():
         
         
     
-    def sample_model(self,w_planets=True,progressbar=True,**kwargs):
+    def sample_models(self,modnames='all',progressbar=True,**kwargs):
         """
         Use PYMC3_ext to sample the astrometric model
         """
         self.update_global_params(**kwargs)
 
-        assert hasattr(self,'w_planets_init_soln'), "Must have initialised and optimized model first"
-        
-        if w_planets:
-            with self.pm_mod_w_planets:
-                self.w_planets_trace = pmx.sample(draws=self.n_draws, tune=self.n_tune, start=self.w_planets_init_soln,
-                                                  chains=self.n_chains, cores=self.n_cores, 
-                                                  progressbar = progressbar, regularization_steps=self.regularization_steps)
-        else:
-            with self.pm_mod_no_planets:
-                self.no_planets_trace = pmx.sample(draws=self.n_draws, tune=self.n_tune, start=self.no_planets_init_soln,
-                                                   chains=self.n_chains, cores=self.n_cores, 
-                                                   progressbar = progressbar, regularization_steps=self.regularization_steps)
+        assert type(modnames)==list or modnames=='all', "modnames must be \"all\" or a list of model names from which to optimize"
+        for modname in self.modnames:
+            if modnames=='all' or modname in modnames:
+                assert modname in self.init_solns, "Must have initialised and optimized model "+modname+" first"
+                with self.pm_models[modname]:
+                    self.traces[modname] = pmx.sample(draws=self.n_draws, tune=self.n_tune, start=self.init_solns[modname],
+                                                    chains=self.n_chains, cores=self.n_cores, 
+                                                    progressbar = progressbar, regularization_steps=self.regularization_steps)
         if not hasattr(self,'savename'):
             self.get_savename(how='save')
         self.save_model()
 
-    def make_summary(self):
+    def make_summary(self,modnames='all'):
         """
         Making summary DataFrame (and csvs) for each of the two models
         """
-        if hasattr(self,'w_planets_trace'):
-            var_names=[var for var in self.w_planets_trace.varnames if '__' not in var and np.product(self.w_planets_trace[var].shape)<6*np.product(self.w_planets_trace['rad_rsun'].shape)]
-            self.w_planets_param_table = pm.summary(self.w_planets_trace,var_names=var_names,round_to=7)
-            self.w_planets_param_table.to_csv(self.savenames[0]+'_trace_output_w_planets.csv')
-        if hasattr(self,'no_planets_trace'):
-            var_names=[var for var in self.no_planets_trace.varnames if '__' not in var and np.product(self.no_planets_trace[var].shape)<6*np.product(self.no_planets_trace['rad_rsun'].shape)]
-            self.no_planets_param_table = pm.summary(self.no_planets_trace,var_names=var_names,round_to=7)
-            self.no_planets_param_table.to_csv(self.savenames[0]+'_trace_output_no_planets.csv')
+        assert type(modnames)==list or modnames=='all', "modnames must be \"all\" or a list of model names from which to optimize"
+        for modname in self.modnames:
+            if modnames=='all' or modname in modnames:
+                var_names=[var for var in self.traces[modname].varnames if '__' not in var and np.product(self.traces[modname][var].shape)<6*np.product(self.traces[modname]['rad_rsun'].shape)]
+                self.w_planets_param_table = pm.summary(self.traces[modname],var_names=var_names,round_to=7)
+                self.w_planets_param_table.to_csv(self.savenames[0]+'_trace_output_'+modname+'.csv')
         
-    def compare_models(self, ic='waic', **kwargs):
+    def compare_models(self, modnames='all', ic='waic', **kwargs):
         """
         Comparing the two trace models using arviz comparison. By default uses the "waic" comparison. 
         """
-        assert (hasattr(self,'w_planets_trace') and hasattr(self,'no_planets_trace')), "Must have initialised, optimized and sampled both w_planets=True and w_planets=False models"
-        import arviz as az
-        with self.pm_mod_w_planets:
-            w_planets_posterior_predictive = pm.sample_posterior_predictive(self.w_planets_trace)
-            w_planets_prior = pm.sample_prior_predictive(150)
-            self.w_planets_idata_pymc3 = az.from_pymc3(
-                self.w_planets_trace,
-                prior=w_planets_prior,
-                posterior_predictive=w_planets_posterior_predictive,
-            )
-        with self.pm_mod_no_planets:
-            no_planets_posterior_predictive = pm.sample_posterior_predictive(self.no_planets_trace)
-            no_planets_prior = pm.sample_prior_predictive(150)
-            self.no_planets_idata_pymc3 = az.from_pymc3(
-                self.no_planets_trace,
-                prior=no_planets_prior,
-                posterior_predictive=no_planets_posterior_predictive,
-            )
-        self.comparison = az.compare({'w_planets':self.w_planets_idata_pymc3,'no_planets':self.no_planets_idata_pymc3},ic=ic)
+        assert type(modnames)==list or modnames=='all', "modnames must be \"all\" or a list of model names from which to optimize"
+        assert len(self.traces)==len(modnames)
+        posterior_predictives={}
+        priors={}
+        self.idata_pymc3s={}
+        for modname in self.modnames:
+            if modnames=='all' or modname in modnames:
+                import arviz as az
+                with self.pm_models[modname]:
+                    posterior_predictives[modname] = pm.sample_posterior_predictive(self.traces[modname])
+                    priors[modname] = pm.sample_prior_predictive(150)
+                    self.idata_pymc3s[modname] = az.from_pymc3(
+                        self.traces[modname],
+                        prior=priors[modname],
+                        posterior_predictive=posterior_predictives[modname],
+                    )
+        self.comparison = az.compare(self.idata_pymc3s,ic=ic)
         self.comparison.to_csv(self.savenames[0]+'_model_comparison.csv')
         return self.comparison
 #         self.no_planets_waic = pm.stats.waic(self.no_planets_trace)
@@ -636,8 +641,6 @@ class AstrometricModel():
         
         #Optimizing and initialising
         self.init_model(w_planets=False)
-        self.optimize_model(w_planets=False)
-        self.sample_model(w_planets=False)
         
         self.init_model(w_planets=True)
         self.optimize_model(w_planets=True)
@@ -696,20 +699,28 @@ class AstrometricModel():
                 nsim=1+np.max([int(nmdp.split('_')[2]) for nmdp in datepickles])
         self.savenames=[os.path.join(self.save_file_loc,self.starname+"_"+date+"_"+str(int(nsim))), os.path.join(self.save_file_loc,self.starname)]
 
-    def plot_planet_histograms(self,log=True,minx=None,nbins=50,**kwargs):
+    def plot_planet_histograms(self,log=True,minx=None,nbins=50,modname=None,**kwargs):
         """
         Plot the classic planet-BD-star histogram
         """
         self.update_global_params(**kwargs)
         minx=150 if minx is None else minx
         bins={}
+        
+        if modname is None:
+            if hasattr(self, "comparison"):
+                comp_info={m:self.comparison['elpd_diff'] for m in self.comparison.index if "w_planets" in m}
+                modname=list(comp_info.keys())[np.argmin(list(comp_info.values()))]
+            else:
+                modname=[m for m in self.modnames if "w_planets" in m][0]
+        
         for npl,pl in enumerate(self.planets):
             plt.subplot(len(self.planets),1,npl+1)
             if log:
-                bins[pl]=plt.hist(self.w_planets_trace['mpl_mjup_'+pl],bins=np.geomspace(1/300,150,nbins),density=True)
+                bins[pl]=plt.hist(self.traces[modname]['mpl_mjup_'+pl],bins=np.geomspace(1/300,150,nbins),density=True)
                 plt.xscale('log')
             else:
-                bins[pl]=plt.hist(self.w_planets_trace['mpl_mjup_'+pl],bins=np.linspace(0,150,nbins),density=True)
+                bins[pl]=plt.hist(self.traces[modname]['mpl_mjup_'+pl],bins=np.linspace(0,150,nbins),density=True)
             minx= np.min(bins[pl][1][:-1][bins[pl][0]>0]) if np.min(bins[pl][1][:-1][bins[pl][0]>0])<minx else minx
             plt.plot(np.tile(self.planets[pl]['true_mpl_mjup'],2),[0,np.max(bins[pl][0])],'--k',alpha=0.35,zorder=3)
             plt.text(self.planets[pl]['true_mpl_mjup']*1.015,np.max(bins[pl][0]),'true mass',fontsize=8,rotation=90,ha='left',va='top')
@@ -733,7 +744,7 @@ class AstrometricModel():
         plt.savefig(self.savenames[0]+"_planet_hist.png",dpi=350)
             
     
-    def plot_planet_corner(self,pl):
+    def plot_planet_corner(self,pl,modname=None):
         """
         Creates a corner plot specifically for an individual planet paramter set
         """
@@ -741,45 +752,57 @@ class AstrometricModel():
         if not self.assume_circ:
             pars+=['ecc','little_omega_rad','big_Omega_rad']
         import corner
-        fig=corner.corner(self.w_planets_trace,var_names=[p+'_'+pl for p in pars],
+        if modname is None:
+            if hasattr(self, "comparison"):
+                comp_info={m:self.comparison['elpd_diff'] for m in self.comparison.index if "w_planets" in m}
+                modname=list(comp_info.keys())[np.argmin(list(comp_info.values()))]
+            else:
+                modname=[m for m in self.modnames if "w_planets" in m][0]
+        fig=corner.corner(self.traces[modname],var_names=[p+'_'+pl for p in pars],
                           truths=[self.planets[pl]["true_"+col] for col in pars])
         fig.savefig(self.savenames[0]+"_planet"+pl+"_corner.png",dpi=350)
         
-    def plot_star_corner(self):
+    def plot_star_corner(self,modname=None):
         """
         Creates a corner plot specifically for the stellar parameters
         """
         pars=['plx_mas','rad_rsun','mass_msun','pmRA_masyr','pmDEC_masyr','RA_offset_mas','DEC_offset_mas']
         import corner
-        fig=corner.corner(self.w_planets_trace,var_names=pars,truths=[getattr(self,"true_"+col) for col in pars])
+        if modname is None:
+            if hasattr(self, "comparison"):
+                comp_info={m:self.comparison['elpd_diff'] for m in self.comparison.index if "w_planets" in m}
+                modname=list(comp_info.keys())[np.argmin(list(comp_info.values()))]
+            else:
+                modname=[m for m in self.modnames if "w_planets" in m][0]
+        fig=corner.corner(self.traces[modname],var_names=pars,truths=[getattr(self,"true_"+col) for col in pars])
         fig.savefig(self.savenames[0]+"_star_corner.png",dpi=350)
     
-    def plot_corners(self):
+    def plot_corners(self,modname=None):
         """
         Creates all the corner plots
         """
 
         for pl in self.planets:
-            self.plot_planet_corner(pl)
-        self.plot_star_corner()
+            self.plot_planet_corner(pl,modname=modname)
+        self.plot_star_corner(modname=modname)
         
-    def plot_residual_timeseries(self):
+    def plot_residual_timeseries(self,modnames='all'):
         """
         Plots the residual timeseries for both with and without planet cases.
-        """
-        plt.subplot(211)
-        plt.plot(self.gaia_t.jd,self.w_planets_init_soln['ymodel'],'.-',label="w/ planet model",alpha=0.6)
-        plt.plot(self.gaia_t.jd,self.no_planets_init_soln['ymodel'],'.-',label="no planet model",alpha=0.6)
+        """        
+        for modname in self.modnames:
+            if modnames=='all' or modname in modnames:
+                plt.subplot(211)
+                plt.plot(self.gaia_t.jd,self.init_solns[modname]['ymodel'],'.-',label=modname,alpha=0.6)
+                plt.subplot(212)
+                plt.plot(self.gaia_t.jd,self.gaia_y_mas-np.nanmedian(self.traces[modname]['ymodel'],axis=0),'.',markersize=1.2,label=modname+" residuals",alpha=0.6)
+        plt.subplot(212)
         plt.plot(self.gaia_t.jd,self.gaia_y_mas,'.',markersize=1.2,label="raw data",alpha=0.6)
         plt.ylabel("model [mas]")
         plt.legend()
-
         plt.subplot(212)
-        plt.plot(self.gaia_t.jd,self.gaia_y_mas-np.nanmedian(self.w_planets_trace['ymodel'],axis=0),'.',markersize=1.2,label="w/ planet residuals",alpha=0.6)
-        plt.plot(self.gaia_t.jd,0.3+self.gaia_y_mas-np.nanmedian(self.no_planets_trace['ymodel'],axis=0),'.',markersize=1.2,label="no planet residuals",alpha=0.6)
         plt.ylabel("residuals [mas]")
         plt.legend()
-        
         plt.savefig(self.savenames[0]+"_resids_timeseries.png",dpi=350)
     
     def save_model(self,savefile=None,limit_size=False):
@@ -793,16 +816,18 @@ class AstrometricModel():
             savefile=self.savenames[0]+'_model.pickle'
 
         #Loading from pickled dictionary
-        saving={}
         n_bytes = 2**31
         max_bytes = 2**31-1
-        bytes_out = pickle.dumps({d:self.__dict__[d] for d in self.__dict__ if 'pm_mod_' not in d})
+        bytes_out = pickle.dumps({d:self.__dict__[d] for d in self.__dict__ if type(self.__dict__[d]) not in [pm.model.Model,xo.orbits.KeplerianOrbit]})
         #bytes_out = pickle.dumps(self)
         with open(savefile, 'wb') as f_out:
             for idx in range(0, len(bytes_out), max_bytes):
                 f_out.write(bytes_out[idx:idx+max_bytes])
-        del saving
         #pick=pickle.dump(self.__dict__,open(loadfile,'wb'))
+
+        # for d in self.__dict__:
+        #     if type(self.__dict__[d])==pm.model.Model:
+        #         self.__dict__[d]
 
     def load_model(self, loadfile=None):
         """Load a model object direct from file.
