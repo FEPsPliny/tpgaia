@@ -818,7 +818,7 @@ class AstrometricModel():
         #Loading from pickled dictionary
         n_bytes = 2**31
         max_bytes = 2**31-1
-        bytes_out = pickle.dumps({d:self.__dict__[d] for d in self.__dict__ if type(self.__dict__[d]) not in [pm.model.Model,xo.orbits.KeplerianOrbit]})
+        bytes_out = pickle.dumps({d:self.__dict__[d] for d in self.__dict__ if type(self.__dict__[d]) not in [pm.model.Model, xo.orbits.KeplerianOrbit] and d!='pm_models'})
         #bytes_out = pickle.dumps(self)
         with open(savefile, 'wb') as f_out:
             for idx in range(0, len(bytes_out), max_bytes):
