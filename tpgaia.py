@@ -564,7 +564,7 @@ class AstrometricModel():
         
         
     
-    def sample_models(self,modnames='all',progressbar=True,**kwargs):
+    def sample_models(self,modnames='all',progressbar=True,save=True,**kwargs):
         """
         Use PYMC3_ext to sample the astrometric model
         """
@@ -578,9 +578,10 @@ class AstrometricModel():
                     self.traces[modname] = pmx.sample(draws=self.n_draws, tune=self.n_tune, start=self.init_solns[modname],
                                                     chains=self.n_chains, cores=self.n_cores, 
                                                     progressbar = progressbar, regularization_steps=self.regularization_steps)
-        if not hasattr(self,'savename'):
-            self.get_savename(how='save')
-        self.save_model()
+        if save:
+            if not hasattr(self,'savename'):
+                self.get_savename(how='save')
+            self.save_model()
 
     def make_summary(self,modnames='all'):
         """
@@ -602,9 +603,10 @@ class AstrometricModel():
         posterior_predictives={}
         priors={}
         self.idata_pymc3s={}
+        import arviz as az
         for modname in self.modnames:
             if modnames=='all' or modname in modnames:
-                import arviz as az
+                
                 with self.pm_models[modname]:
                     posterior_predictives[modname] = pm.sample_posterior_predictive(self.traces[modname])
                     priors[modname] = pm.sample_prior_predictive(150)
@@ -818,7 +820,8 @@ class AstrometricModel():
         #Loading from pickled dictionary
         n_bytes = 2**31
         max_bytes = 2**31-1
-        bytes_out = pickle.dumps({d:self.__dict__[d] for d in self.__dict__ if type(self.__dict__[d]) not in [pm.model.Model, xo.orbits.KeplerianOrbit] and d!='pm_models'})
+        typenolist=[pm.model.Model, xo.orbits.KeplerianOrbit]
+        bytes_out = pickle.dumps({d:self.__dict__[d] for d in self.__dict__ if (type(self.__dict__[d]) not in typenolist and d!='pm_models' and (type(self.__dict__[d])==dict and np.any([type(self.__dict__[d][i]) in typenolist for i in self.__dict__[d]])))})
         #bytes_out = pickle.dumps(self)
         with open(savefile, 'wb') as f_out:
             for idx in range(0, len(bytes_out), max_bytes):
