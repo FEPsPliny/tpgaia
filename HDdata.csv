@@ -1,0 +1,2 @@
+designation;source_id;ra;dec;parallax;pmra;pmdec;ruwe;phot_g_mean_mag;bp_rp;radial_velocity;phot_variable_flag;non_single_star;has_xp_continuous;has_xp_sampled;has_rvs;has_epoch_photometry;has_epoch_rv;has_mcmc_gspphot;has_mcmc_msc;teff_gspphot;logg_gspphot;mh_gspphot;distance_gspphot;azero_gspphot;ag_gspphot;ebpminrp_gspphot;
+Gaia DR3;6.05585E+18;6.05585E+18;197.3171125;-60.30843748;10.52006886;-39.76902019;-19.9613761;0.94383246;8.106044;0.5681009;7.5617456;NOT_AVAILABLE;0;true;true;false;false;false;true;true;6512.7812;4.0885;-0.5593;93.6269;0.0048;0.0042;0.0023

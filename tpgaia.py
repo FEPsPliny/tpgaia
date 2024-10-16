@@ -15,8 +15,8 @@ from astropy import units as u
 from astropy.time import Time
 from astropy.coordinates import Angle
 from astropy.coordinates import get_body_barycentric
-import pymc3 as pm
-import pymc3_ext as pmx
+import pymc as pm
+import pymc_ext as pmx
 import arviz as az
 #from tabulate import tabulate
 from aesara_theano_fallback import aesara as theano
